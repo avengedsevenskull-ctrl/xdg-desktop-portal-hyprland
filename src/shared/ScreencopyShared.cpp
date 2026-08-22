@@ -160,7 +160,7 @@ static SSelectionData parsePickerSelection(const std::string& output) {
     return data;
 }
 
-SSelectionData promptForScreencopySelection() {
+SSelectionData promptForScreencopySelection(bool allowWindows) {
     const char*         WAYLAND_DISPLAY             = getenv("WAYLAND_DISPLAY");
     const char*         XCURSOR_SIZE                = getenv("XCURSOR_SIZE");
     const char*         HYPRLAND_INSTANCE_SIGNATURE = getenv("HYPRLAND_INSTANCE_SIGNATURE");
@@ -180,7 +180,8 @@ SSelectionData promptForScreencopySelection() {
         proc.addEnv("QT_QPA_PLATFORM", "wayland");
     proc.addEnv("XCURSOR_SIZE", XCURSOR_SIZE ? XCURSOR_SIZE : "24");
     proc.addEnv("HYPRLAND_INSTANCE_SIGNATURE", HYPRLAND_INSTANCE_SIGNATURE ? HYPRLAND_INSTANCE_SIGNATURE : "0");
-    proc.addEnv("XDPH_WINDOW_SHARING_LIST", buildWindowList());
+    proc.addEnv("XDPH_WINDOW_SHARING_LIST",
+                allowWindows ? buildWindowList() : ""); // buildWindowList will sanitize any shell stuff in case the picker (qt) does something funky? It shouldn't.
     proc.addEnv("XDPH_OUTPUT_SHARING_LIST", buildOutputList());
 
     if (!proc.runSync())
