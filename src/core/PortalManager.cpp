@@ -128,7 +128,28 @@ const CPortalManager::SCompositorKeymap& CPortalManager::getCompositorKeymap() c
     return m_sCompositorKeymap;
 }
 
+std::optional<xkb_layout_index_t> CPortalManager::activeLayoutGroup(struct xkb_keymap* keymap) const {
+    if (!m_pLayoutWatcher)
+        return std::nullopt;
+
+    return m_pLayoutWatcher->activeGroup(keymap);
+}
+
+size_t CPortalManager::addLayoutChangeListener(std::function<void()> fn) {
+    if (!m_pLayoutWatcher)
+        return 0;
+
+    return m_pLayoutWatcher->addChangeListener(std::move(fn));
+}
+
+void CPortalManager::removeLayoutChangeListener(size_t id) {
+    if (m_pLayoutWatcher)
+        m_pLayoutWatcher->removeChangeListener(id);
+}
+
 CPortalManager::CPortalManager() {
+    m_pLayoutWatcher = std::make_unique<CHyprlandLayoutWatcher>();
+
     const auto XDG_CONFIG_HOME = getenv("XDG_CONFIG_HOME");
     const auto HOME            = getenv("HOME");
 
@@ -464,6 +485,9 @@ void CPortalManager::startEventLoop() {
     addFdToEventLoop(wl_display_get_fd(m_sWaylandConnection.display), POLLIN, nullptr);
     addFdToEventLoop(pw_loop_get_fd(m_sPipewire.loop), POLLIN, nullptr);
     addFdToEventLoop(m_sEventLoopInternals.wakeFd, POLLIN, nullptr);
+
+    if (m_pLayoutWatcher)
+        m_pLayoutWatcher->start();
 
     std::thread pollThr([this]() {
         while (1) {
@@ -810,6 +834,9 @@ void CPortalManager::removeFdFromEventLoop(int fd) {
 
 void CPortalManager::terminate() {
     m_bTerminate = true;
+
+    if (m_pLayoutWatcher)
+        m_pLayoutWatcher->stop();
 
     if (m_sEventLoopInternals.wakeFd >= 0) {
         const uint64_t value = 1;

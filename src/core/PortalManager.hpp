@@ -1,6 +1,8 @@
 #pragma once
 
+#include <functional>
 #include <memory>
+#include <optional>
 #include <sdbus-c++/sdbus-c++.h>
 #include <hyprlang.hpp>
 
@@ -13,6 +15,7 @@
 #include "../helpers/Timer.hpp"
 #include "../shared/ToplevelManager.hpp"
 #include "../shared/ToplevelMappingManager.hpp"
+#include "../shared/HyprlandLayoutWatcher.hpp"
 #include <gbm.h>
 #include <poll.h>
 #include <xf86drm.h>
@@ -91,6 +94,12 @@ class CPortalManager {
 
     const SCompositorKeymap& getCompositorKeymap() const;
 
+    // The compositor's active xkb group, resolved against the given keymap.
+    // nullopt until the active layout has been observed at least once.
+    std::optional<xkb_layout_index_t> activeLayoutGroup(struct xkb_keymap* keymap) const;
+    size_t                            addLayoutChangeListener(std::function<void()> fn);
+    void                              removeLayoutChangeListener(size_t id);
+
     struct {
         pw_loop* loop = nullptr;
     } m_sPipewire;
@@ -152,14 +161,16 @@ class CPortalManager {
     void terminate();
 
   private:
-    void              startEventLoop();
-    void              setupXDGOutput(SOutput* output);
-    void              setupSeatKeyboard();
+    void                                    startEventLoop();
+    void                                    setupXDGOutput(SOutput* output);
+    void                                    setupSeatKeyboard();
 
-    SCompositorKeymap m_sCompositorKeymap;
+    SCompositorKeymap                       m_sCompositorKeymap;
 
-    std::atomic<bool> m_bTerminate = false;
-    pid_t             m_iPID       = 0;
+    std::unique_ptr<CHyprlandLayoutWatcher> m_pLayoutWatcher;
+
+    std::atomic<bool>                       m_bTerminate = false;
+    pid_t                                   m_iPID       = 0;
 
     struct {
         std::condition_variable              loopSignal;
