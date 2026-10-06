@@ -336,11 +336,46 @@ CRemoteDesktopPortal::CRemoteDesktopPortal(SP<CCZwlrVirtualPointerManagerV1> poi
         .forInterface(INTERFACE_NAME);
 
     Debug::log(LOG, "[remotedesktop] registered");
+
+    m_iLayoutListener = g_pPortalManager->addLayoutChangeListener([this] { onCompositorLayoutChanged(); });
 }
 
 CRemoteDesktopPortal::~CRemoteDesktopPortal() {
+    if (m_iLayoutListener)
+        g_pPortalManager->removeLayoutChangeListener(m_iLayoutListener);
+
     if (m_xkbCtx)
         xkb_context_unref(m_xkbCtx);
+}
+
+xkb_layout_index_t CRemoteDesktopPortal::sessionLayout(SSession* session) const {
+    if (!session || !session->xkbState)
+        return 0;
+
+    if (const auto ACTIVE = g_pPortalManager->activeLayoutGroup(session->keymap.keymap); ACTIVE.has_value())
+        return *ACTIVE;
+
+    return xkb_state_serialize_layout(session->xkbState, XKB_STATE_LAYOUT_EFFECTIVE);
+}
+
+void CRemoteDesktopPortal::pushModifiersToClient(SSession* session) {
+    if (!session || !session->eisKeyboard || !session->xkbState)
+        return;
+
+    eis_device_keyboard_send_xkb_modifiers(session->eisKeyboard, xkb_state_serialize_mods(session->xkbState, XKB_STATE_MODS_DEPRESSED),
+                                           xkb_state_serialize_mods(session->xkbState, XKB_STATE_MODS_LATCHED), xkb_state_serialize_mods(session->xkbState, XKB_STATE_MODS_LOCKED),
+                                           sessionLayout(session));
+    session->modifiersDirty = false;
+}
+
+void CRemoteDesktopPortal::onCompositorLayoutChanged() {
+    for (auto& session : m_vSessions) {
+        if (session->virtualKeyboard && session->xkbState)
+            sendModifiers(session->virtualKeyboard.get(), session->xkbState, activeKeysymModifiers(session->keysymModifiers), sessionLayout(session.get()));
+
+        if (session->eisKeyboard)
+            pushModifiersToClient(session.get());
+    }
 }
 
 // ─── Session management ──────────────────────────────────────────
@@ -1001,7 +1036,7 @@ void CRemoteDesktopPortal::onNotifyKeyboardKeycode(sdbus::ObjectPath sessionHand
 
     PSESSION->virtualKeyboard->sendKey(currentTimeMs(), keycode, state);
     xkb_state_update_key(PSESSION->xkbState, keycode + 8, state == 1 ? XKB_KEY_DOWN : XKB_KEY_UP);
-    sendModifiers(PSESSION->virtualKeyboard.get(), PSESSION->xkbState, activeKeysymModifiers(PSESSION->keysymModifiers));
+    sendModifiers(PSESSION->virtualKeyboard.get(), PSESSION->xkbState, activeKeysymModifiers(PSESSION->keysymModifiers), sessionLayout(PSESSION));
     wl_display_flush(g_pPortalManager->m_sWaylandConnection.display);
 }
 
@@ -1011,9 +1046,7 @@ void CRemoteDesktopPortal::onNotifyKeyboardKeysym(sdbus::ObjectPath sessionHandl
         return;
 
     const auto PRESSED = PSESSION->keysymKeycodes.find(keysym);
-    const auto KEY     = state != 1 && PRESSED != PSESSION->keysymKeycodes.end() ?
-        PRESSED->second :
-        keycodeFromKeysym(PSESSION->keymap.keymap, keysym, xkb_state_serialize_layout(PSESSION->xkbState, XKB_STATE_LAYOUT_EFFECTIVE));
+    const auto KEY     = state != 1 && PRESSED != PSESSION->keysymKeycodes.end() ? PRESSED->second : keycodeFromKeysym(PSESSION->keymap.keymap, keysym, sessionLayout(PSESSION));
     if (!KEY.keycode) {
         Debug::log(WARN, "[remotedesktop] keysym 0x{:x} not found in keymap", keysym);
         return;
@@ -1125,6 +1158,23 @@ void CRemoteDesktopPortal::processEISEvents() {
                         removeEISKeyboardDevice(s.get(), false);
                     break;
                 }
+                case EIS_EVENT_DEVICE_START_EMULATING: {
+                    if (eis_event_get_device(event) == s->eisKeyboard)
+                        pushModifiersToClient(s.get());
+                    break;
+                }
+                case EIS_EVENT_DEVICE_STOP_EMULATING: {
+                    // Keyboard state belongs to the keyboard device alone. Resetting it
+                    // when only the pointer stops used to release the user's modifiers
+                    // mid-session, so guard on the device that actually stopped.
+                    if (eis_event_get_device(event) == s->eisKeyboard && s->virtualKeyboard && s->xkbState) {
+                        const auto GROUP = sessionLayout(s.get());
+                        s->virtualKeyboard->sendModifiers(0, 0, xkb_state_serialize_mods(s->xkbState, XKB_STATE_MODS_LOCKED), GROUP);
+                        eis_device_keyboard_send_xkb_modifiers(s->eisKeyboard, 0, 0, xkb_state_serialize_mods(s->xkbState, XKB_STATE_MODS_LOCKED), GROUP);
+                        s->modifiersDirty = false;
+                    }
+                    break;
+                }
                 case EIS_EVENT_POINTER_MOTION: {
                     if (s->virtualPointer) {
                         double dx = eis_event_pointer_get_dx(event);
@@ -1210,11 +1260,17 @@ void CRemoteDesktopPortal::processEISEvents() {
                         uint32_t state = eis_event_keyboard_get_key_is_press(event) ? 1 : 0;
                         s->virtualKeyboard->sendKey(time, key, state);
                         xkb_state_update_key(s->xkbState, key + 8, state == 1 ? XKB_KEY_DOWN : XKB_KEY_UP);
-                        sendModifiers(s->virtualKeyboard.get(), s->xkbState, activeKeysymModifiers(s->keysymModifiers));
+                        sendModifiers(s->virtualKeyboard.get(), s->xkbState, activeKeysymModifiers(s->keysymModifiers), sessionLayout(s.get()));
+                        s->modifiersDirty = true;
                     }
                     break;
                 }
                 case EIS_EVENT_FRAME: {
+
+                    // libei wants the modifier/group update after the frame that carried
+                    // the key events they belong to.
+                    if (s->modifiersDirty)
+                        pushModifiersToClient(s.get());
 
                     // Commit all pending events with a frame
                     if (s->virtualPointer)

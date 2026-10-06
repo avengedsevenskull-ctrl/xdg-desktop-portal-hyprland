@@ -108,6 +108,7 @@ class CRemoteDesktopPortal {
         bool                                        axisActiveY     = false;
         int32_t                                     discreteScrollX = 0;
         int32_t                                     discreteScrollY = 0;
+        bool                                        modifiersDirty  = false;
         std::unordered_map<int32_t, xkb_mod_mask_t> keysymModifiers;
         std::unordered_map<int32_t, SKeycode>       keysymKeycodes;
 
@@ -135,11 +136,19 @@ class CRemoteDesktopPortal {
     bool        acquireKeymap(SKeymap& keymap);
     static void releaseKeymap(SKeymap& keymap);
 
+    // The xkb group injected events should be interpreted in: the compositor's
+    // active group when it is known, the session's own state otherwise.
+    xkb_layout_index_t sessionLayout(SSession* session) const;
+    // Tell the EIS client (Deskflow) the current modifier state and group.
+    void pushModifiersToClient(SSession* session);
+    void onCompositorLayoutChanged();
+
     // Keysym → keycode conversion (via xkbcommon)
     static SKeycode                        keycodeFromKeysym(struct xkb_keymap* keymap, uint32_t sym, xkb_layout_index_t preferredLayout);
 
     std::unique_ptr<sdbus::IObject>        m_pObject;
     std::vector<std::unique_ptr<SSession>> m_vSessions;
+    size_t                                 m_iLayoutListener = 0;
 
     struct {
         SP<CCZwlrVirtualPointerManagerV1> pointer;
