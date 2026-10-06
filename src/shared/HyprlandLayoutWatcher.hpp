@@ -35,10 +35,12 @@ class CHyprlandLayoutWatcher {
 
   private:
     bool                                                  connectSocket();
+    bool                                                  seedActiveLayout();
     void                                                  onEvent();
     void                                                  dispatchChange();
 
     int                                                   m_iFd = -1;
+    std::string                                           m_sInstanceDir;
     std::string                                           m_sBuffer;
     mutable std::mutex                                    m_mMutex;
     std::string                                           m_sActiveLayout;

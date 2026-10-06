@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -20,21 +21,40 @@ static std::string runtimeDir() {
     return "/run/user/" + std::to_string(getuid());
 }
 
-static std::string layoutSocketPath() {
+static std::string hyprlandInstanceDir() {
     const char* HIS = getenv("HYPRLAND_INSTANCE_SIGNATURE");
     if (HIS && *HIS)
-        return runtimeDir() + "/hypr/" + HIS + "/.socket2.sock";
+        return runtimeDir() + "/hypr/" + HIS;
 
     // No signature in our environment: there is one compositor per user session,
     // so take the first instance directory that actually has the socket.
     std::error_code ec;
     for (const auto& ENTRY : std::filesystem::directory_iterator(runtimeDir() + "/hypr", ec)) {
-        const auto CANDIDATE = ENTRY.path() / ".socket2.sock";
-        if (std::filesystem::exists(CANDIDATE, ec))
-            return CANDIDATE;
+        if (std::filesystem::exists(ENTRY.path() / ".socket2.sock", ec))
+            return ENTRY.path();
     }
 
     return "";
+}
+
+// The devices reply is a flat JSON document; we only need the first keyboard's
+// active keymap and do not want to pull in a JSON dependency for that.
+static std::optional<std::string> firstActiveKeymap(const std::string& json) {
+    static constexpr const char* KEY   = "\"active_keymap\"";
+    const auto                   FIELD = json.find(KEY);
+    if (FIELD == std::string::npos)
+        return std::nullopt;
+    const auto COLON = json.find(':', FIELD);
+    if (COLON == std::string::npos)
+        return std::nullopt;
+    const auto OPEN = json.find('"', COLON);
+    if (OPEN == std::string::npos)
+        return std::nullopt;
+    const auto CLOSE = json.find('"', OPEN + 1);
+    if (CLOSE == std::string::npos)
+        return std::nullopt;
+
+    return json.substr(OPEN + 1, CLOSE - OPEN - 1);
 }
 
 CHyprlandLayoutWatcher::~CHyprlandLayoutWatcher() {
@@ -51,6 +71,8 @@ void CHyprlandLayoutWatcher::start() {
     if (!connectSocket())
         return;
 
+    seedActiveLayout();
+
     g_pPortalManager->addFdToEventLoop(m_iFd, POLLIN, [this] { onEvent(); });
 }
 
@@ -64,13 +86,15 @@ void CHyprlandLayoutWatcher::stop() {
 }
 
 bool CHyprlandLayoutWatcher::connectSocket() {
-    const auto PATH = layoutSocketPath();
-    if (PATH.empty()) {
+    m_sInstanceDir = hyprlandInstanceDir();
+    if (m_sInstanceDir.empty()) {
         Debug::log(WARN, "[layout] no Hyprland IPC socket found, keyboard layout mirroring disabled");
         return false;
     }
 
-    const int FD = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    const auto PATH = m_sInstanceDir + "/.socket2.sock";
+
+    const int  FD = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (FD < 0) {
         Debug::log(WARN, "[layout] could not create IPC socket: {}", strerror(errno));
         return false;
@@ -103,6 +127,63 @@ bool CHyprlandLayoutWatcher::connectSocket() {
 
     m_iFd = FD;
     Debug::log(LOG, "[layout] watching Hyprland active layout at {}", PATH);
+    return true;
+}
+
+bool CHyprlandLayoutWatcher::seedActiveLayout() {
+    // activelayout events fire on change only, and the portal may start after the
+    // user already switched: ask the compositor once so the group is right from
+    // the first injected key instead of falling back to group 0.
+    const auto PATH = m_sInstanceDir + "/.socket.sock";
+
+    const int  FD = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (FD < 0)
+        return false;
+
+    timeval timeout{.tv_sec = 0, .tv_usec = 250000};
+    setsockopt(FD, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+    sockaddr_un addr{.sun_family = AF_UNIX};
+    if (PATH.size() >= sizeof(addr.sun_path)) {
+        close(FD);
+        return false;
+    }
+
+    strncpy(addr.sun_path, PATH.c_str(), sizeof(addr.sun_path) - 1);
+
+    if (connect(FD, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        close(FD);
+        return false;
+    }
+
+    static constexpr const char* REQUEST = "j/devices";
+    if (write(FD, REQUEST, strlen(REQUEST)) < 0) {
+        close(FD);
+        return false;
+    }
+
+    std::string            response;
+    std::array<char, 8192> buf;
+    while (response.size() < (1U << 20)) {
+        const auto N = read(FD, buf.data(), buf.size());
+        if (N > 0) {
+            response.append(buf.data(), static_cast<size_t>(N));
+            continue;
+        }
+        break; // EOF, timeout or error: parse whatever arrived
+    }
+    close(FD);
+
+    const auto LAYOUT = firstActiveKeymap(response);
+    if (!LAYOUT)
+        return false;
+
+    std::lock_guard<std::mutex> lg(m_mMutex);
+    if (!m_sActiveLayout.empty())
+        return true; // a live event arrived while we were querying; it is fresher
+
+    m_sActiveLayout = *LAYOUT;
+    Debug::log(LOG, "[layout] initial active layout '{}'", *LAYOUT);
     return true;
 }
 
