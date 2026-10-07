@@ -1213,7 +1213,7 @@ void CRemoteDesktopPortal::processEISEvents() {
                     if (s->virtualPointer) {
                         double dx = eis_event_scroll_get_dx(event);
                         double dy = eis_event_scroll_get_dy(event);
-                        Debug::log(LOG, "[EIS] scroll delta dx={} dy={}", dx, dy);
+                        Debug::log(LOG, "[EIS] scroll delta dx={} dy={} -> axis x={} y={}", dx, dy, dx, -dy);
                         if (dy != 0.0) {
                             s->virtualPointer->sendAxisSource(2);
                             s->virtualPointer->sendAxis(time, 0, wl_fixed_from_double(-dy));
@@ -1231,16 +1231,19 @@ void CRemoteDesktopPortal::processEISEvents() {
                     if (s->virtualPointer) {
                         s->discreteScrollX += eis_event_scroll_get_discrete_dx(event);
                         s->discreteScrollY += eis_event_scroll_get_discrete_dy(event);
+                        Debug::log(LOG, "[EIS] scroll discrete dx={} dy={}", eis_event_scroll_get_discrete_dx(event), eis_event_scroll_get_discrete_dy(event));
                         const int32_t STEPSX = s->discreteScrollX / 120;
                         const int32_t STEPSY = s->discreteScrollY / 120;
                         s->discreteScrollX %= 120;
                         s->discreteScrollY %= 120;
                         if (STEPSY != 0) {
                             const int32_t VERTICALSTEPS = -STEPSY;
+                            Debug::log(LOG, "[EIS] scroll discrete dy={} -> steps={} axisValue={}", eis_event_scroll_get_discrete_dy(event), VERTICALSTEPS, VERTICALSTEPS * 15);
                             s->virtualPointer->sendAxisSource(0);
                             s->virtualPointer->sendAxisDiscrete(time, 0, wl_fixed_from_int(VERTICALSTEPS * 15), VERTICALSTEPS);
                         }
                         if (STEPSX != 0) {
+                            Debug::log(LOG, "[EIS] scroll discrete dx={} -> steps={} axisValue={}", eis_event_scroll_get_discrete_dx(event), STEPSX, STEPSX * 15);
                             s->virtualPointer->sendAxisSource(0);
                             s->virtualPointer->sendAxisDiscrete(time, 1, wl_fixed_from_int(STEPSX * 15), STEPSX);
                         }
