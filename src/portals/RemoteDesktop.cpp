@@ -1213,6 +1213,7 @@ void CRemoteDesktopPortal::processEISEvents() {
                     if (s->virtualPointer) {
                         double dx = eis_event_scroll_get_dx(event);
                         double dy = eis_event_scroll_get_dy(event);
+                        Debug::log(LOG, "[EIS] scroll delta dx={} dy={}", dx, dy);
                         if (dy != 0.0) {
                             s->virtualPointer->sendAxisSource(2);
                             s->virtualPointer->sendAxis(time, 0, wl_fixed_from_double(-dy));
@@ -1221,6 +1222,8 @@ void CRemoteDesktopPortal::processEISEvents() {
                             s->virtualPointer->sendAxisSource(2);
                             s->virtualPointer->sendAxis(time, 1, wl_fixed_from_double(dx));
                         }
+                    } else {
+                        Debug::log(WARN, "[EIS] scroll delta with no virtual pointer");
                     }
                     break;
                 }
